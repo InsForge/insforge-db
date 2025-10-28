@@ -1,16 +1,6 @@
 # Build stage for compiling extensions
 FROM postgres:15.13 AS builder
 
-# Add PostgreSQL apt repository
-RUN apt-get update && apt-get install -y \
-    lsb-release \
-    wget \
-    gnupg \
-    && sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list' \
-    && wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add - \
-    && apt-get update \
-    && rm -rf /var/lib/apt/lists/*
-
 # Install compiler tools and build dependencies
 RUN apt-get update && apt-get install -y \
     postgresql-server-dev-15 \
@@ -21,6 +11,7 @@ RUN apt-get update && apt-get install -y \
     curl \
     pkg-config \
     libssl-dev \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Build pgvector
@@ -50,22 +41,17 @@ RUN cd /tmp && \
 # Final stage - clean runtime image
 FROM postgres:15.13
 
-# Add PostgreSQL apt repository
+# Add TimescaleDB repository using modern method
 RUN apt-get update && apt-get install -y \
-    lsb-release \
-    wget \
+    ca-certificates \
+    curl \
     gnupg \
-    && sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list' \
-    && wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add - \
+    lsb-release \
+    && mkdir -p /etc/apt/keyrings \
+    && curl -fsSL https://packagecloud.io/timescale/timescaledb/gpgkey | gpg --dearmor -o /etc/apt/keyrings/timescaledb.gpg \
+    && echo "deb [signed-by=/etc/apt/keyrings/timescaledb.gpg] https://packagecloud.io/timescale/timescaledb/debian/ $(lsb_release -cs) main" > /etc/apt/sources.list.d/timescaledb.list \
     && apt-get update \
     && rm -rf /var/lib/apt/lists/*
-
-# Add TimescaleDB repository
-RUN apt-get update && \
-    echo "deb https://packagecloud.io/timescale/timescaledb/debian/ $(lsb_release -c -s) main" | tee /etc/apt/sources.list.d/timescaledb.list && \
-    wget --quiet -O - https://packagecloud.io/timescale/timescaledb/gpgkey | apt-key add - && \
-    apt-get update && \
-    rm -rf /var/lib/apt/lists/*
 
 # Install runtime dependencies and pre-built extensions
 RUN apt-get update && apt-get install -y \
@@ -84,7 +70,7 @@ COPY --from=builder /usr/lib/postgresql/15/lib/pg_graphql.so /usr/lib/postgresql
 COPY --from=builder /usr/share/postgresql/15/extension/pg_graphql* /usr/share/postgresql/15/extension/
 
 # Clean up unnecessary packages
-RUN apt-get purge -y lsb-release wget gnupg && \
+RUN apt-get purge -y lsb-release curl gnupg && \
     apt-get autoremove -y && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
