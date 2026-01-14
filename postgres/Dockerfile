@@ -38,6 +38,15 @@ RUN cd /tmp && \
     cd / && \
     rm -rf /tmp/pg_graphql
 
+# Build pg_net (async HTTP requests)
+RUN cd /tmp && \
+    git clone https://github.com/supabase/pg_net.git && \
+    cd pg_net && \
+    git checkout v0.14.0 && \
+    cargo pgrx install --release --pg-config=/usr/lib/postgresql/15/bin/pg_config && \
+    cd / && \
+    rm -rf /tmp/pg_net
+
 # Final stage - clean runtime image
 FROM postgres:15.13
 
@@ -61,6 +70,7 @@ RUN apt-get update && apt-get install -y \
     postgresql-15-postgis-3 \
     postgis \
     timescaledb-2-postgresql-15 \
+    libcurl4 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy compiled extensions from builder stage
@@ -68,6 +78,8 @@ COPY --from=builder /usr/lib/postgresql/15/lib/vector.so /usr/lib/postgresql/15/
 COPY --from=builder /usr/share/postgresql/15/extension/vector* /usr/share/postgresql/15/extension/
 COPY --from=builder /usr/lib/postgresql/15/lib/pg_graphql.so /usr/lib/postgresql/15/lib/
 COPY --from=builder /usr/share/postgresql/15/extension/pg_graphql* /usr/share/postgresql/15/extension/
+COPY --from=builder /usr/lib/postgresql/15/lib/pg_net.so /usr/lib/postgresql/15/lib/
+COPY --from=builder /usr/share/postgresql/15/extension/pg_net* /usr/share/postgresql/15/extension/
 
 # Clean up unnecessary packages
 RUN apt-get purge -y lsb-release curl gnupg && \
