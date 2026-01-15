@@ -18,7 +18,7 @@ RUN apt-get update && apt-get install -y \
 RUN cd /tmp && \
     git clone --branch v0.7.4 https://github.com/pgvector/pgvector.git && \
     cd pgvector && \
-    make PG_CONFIG=/usr/lib/postgresql/15/bin/pg_config && \
+    make PG_CONFIG=/usr/lib/postgresql/15/bin/pg_config OPTFLAGS="" && \
     make install PG_CONFIG=/usr/lib/postgresql/15/bin/pg_config && \
     cd / && \
     rm -rf /tmp/pgvector
@@ -37,6 +37,19 @@ RUN cd /tmp && \
     cargo pgrx install --release --pg-config=/usr/lib/postgresql/15/bin/pg_config && \
     cd / && \
     rm -rf /tmp/pg_graphql
+
+# Build pg_net (async HTTP requests) - C extension using libcurl
+# Note: v0.14.0 has curl type warnings, disable -Werror for compatibility with newer compilers
+RUN apt-get update && apt-get install -y libcurl4-openssl-dev && \
+    cd /tmp && \
+    git clone https://github.com/supabase/pg_net.git && \
+    cd pg_net && \
+    git checkout v0.14.0 && \
+    make PG_CONFIG=/usr/lib/postgresql/15/bin/pg_config CFLAGS="-Wno-error" && \
+    make install PG_CONFIG=/usr/lib/postgresql/15/bin/pg_config && \
+    cd / && \
+    rm -rf /tmp/pg_net && \
+    rm -rf /var/lib/apt/lists/*
 
 # Final stage - clean runtime image
 FROM postgres:15.13
@@ -61,6 +74,7 @@ RUN apt-get update && apt-get install -y \
     postgresql-15-postgis-3 \
     postgis \
     timescaledb-2-postgresql-15 \
+    libcurl4 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy compiled extensions from builder stage
@@ -68,6 +82,9 @@ COPY --from=builder /usr/lib/postgresql/15/lib/vector.so /usr/lib/postgresql/15/
 COPY --from=builder /usr/share/postgresql/15/extension/vector* /usr/share/postgresql/15/extension/
 COPY --from=builder /usr/lib/postgresql/15/lib/pg_graphql.so /usr/lib/postgresql/15/lib/
 COPY --from=builder /usr/share/postgresql/15/extension/pg_graphql* /usr/share/postgresql/15/extension/
+# pg_net may create versioned .so files, copy all matching patterns
+COPY --from=builder /usr/lib/postgresql/15/lib/pg_net*.so /usr/lib/postgresql/15/lib/
+COPY --from=builder /usr/share/postgresql/15/extension/pg_net* /usr/share/postgresql/15/extension/
 
 # Clean up unnecessary packages
 RUN apt-get purge -y lsb-release curl gnupg && \

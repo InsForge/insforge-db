@@ -11,6 +11,7 @@ This repository builds a custom PostgreSQL 15.13 Docker image with pre-installed
 The custom Postgres image includes:
 - **pgvector** (v0.7.4) - Vector similarity search for embeddings
 - **pg_graphql** (v1.5.11) - GraphQL API generation from PostgreSQL schemas
+- **pg_net** (v0.14.0) - Async HTTP/HTTPS requests from PostgreSQL
 - **TimescaleDB 2** - Time-series database capabilities
 - **PostGIS 3** - Spatial database support
 - **pg_cron** - Job scheduling within PostgreSQL
@@ -68,8 +69,9 @@ git push origin v1.0.0
 ### Extension Version Management
 
 When updating extension versions:
-- **pgvector**: Update git tag in line 28 of [postgres/Dockerfile](postgres/Dockerfile#L28)
-- **pg_graphql**: Update git checkout in line 44 of [postgres/Dockerfile](postgres/Dockerfile#L44)
+- **pgvector**: Update git tag in line 19 of [postgres/Dockerfile](postgres/Dockerfile#L19)
+- **pg_graphql**: Update git checkout in line 35 of [postgres/Dockerfile](postgres/Dockerfile#L35)
+- **pg_net**: Update git checkout in line 45 of [postgres/Dockerfile](postgres/Dockerfile#L45)
 - **TimescaleDB, PostGIS, pg_cron, pg_http**: Managed via apt packages
 
 ### Build Dependencies
@@ -78,6 +80,11 @@ When updating extension versions:
   - Rust toolchain (installed via rustup)
   - cargo-pgrx v0.12.9 (must match pg_graphql compatibility)
   - PostgreSQL server development files
+
+- **pg_net** requires:
+  - Rust toolchain (installed via rustup)
+  - cargo-pgrx v0.12.9 (shared with pg_graphql)
+  - libcurl4 runtime dependency
 
 - **pgvector** requires:
   - GCC compiler
@@ -94,11 +101,12 @@ docker exec -it <container_id> psql -U postgres
 
 # Inside psql, check available extensions
 SELECT * FROM pg_available_extensions
-WHERE name IN ('vector', 'pg_graphql', 'timescaledb', 'postgis', 'pg_cron', 'http');
+WHERE name IN ('vector', 'pg_graphql', 'pg_net', 'timescaledb', 'postgis', 'pg_cron', 'http');
 
 # Enable extensions
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS pg_graphql;
+CREATE EXTENSION IF NOT EXISTS pg_net;
 CREATE EXTENSION IF NOT EXISTS timescaledb;
 CREATE EXTENSION IF NOT EXISTS postgis;
 CREATE EXTENSION IF NOT EXISTS pg_cron;
