@@ -38,6 +38,12 @@ RUN cd /tmp && \
     cd / && \
     rm -rf /tmp/pg_graphql
 
+# Build InsForge PostgreSQL utility hooks
+COPY insforge_pg_utils /tmp/insforge_pg_utils
+RUN make -C /tmp/insforge_pg_utils PG_CONFIG=/usr/lib/postgresql/15/bin/pg_config && \
+    make -C /tmp/insforge_pg_utils install PG_CONFIG=/usr/lib/postgresql/15/bin/pg_config && \
+    rm -rf /tmp/insforge_pg_utils
+
 # Build pg_net (async HTTP requests) - C extension using libcurl
 # Note: v0.14.0 has curl type warnings, disable -Werror for compatibility with newer compilers
 RUN apt-get update && apt-get install -y libcurl4-openssl-dev && \
@@ -85,6 +91,7 @@ COPY --from=builder /usr/share/postgresql/15/extension/pg_graphql* /usr/share/po
 # pg_net may create versioned .so files, copy all matching patterns
 COPY --from=builder /usr/lib/postgresql/15/lib/pg_net*.so /usr/lib/postgresql/15/lib/
 COPY --from=builder /usr/share/postgresql/15/extension/pg_net* /usr/share/postgresql/15/extension/
+COPY --from=builder /usr/lib/postgresql/15/lib/insforge_pg_utils.so /usr/lib/postgresql/15/lib/
 
 # Clean up unnecessary packages
 RUN apt-get purge -y lsb-release curl gnupg && \

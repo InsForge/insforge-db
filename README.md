@@ -12,6 +12,7 @@ This image is based on **PostgreSQL 15.13** and includes the following extension
 - **[PostGIS 3](https://postgis.net/)** - Spatial and geographic objects support
 - **[pg_cron](https://github.com/citusdata/pg_cron)** - Job scheduling within PostgreSQL
 - **[pgsql-http](https://github.com/pramsey/pgsql-http)** - HTTP client for making requests from SQL
+- **insforge_pg_utils** - InsForge preload hook for scoped managed-table RLS policy administration
 
 ## Quick Start
 
