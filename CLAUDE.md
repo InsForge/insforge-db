@@ -16,7 +16,7 @@ The custom Postgres image includes:
 - **PostGIS 3** - Spatial database support
 - **pg_cron** - Job scheduling within PostgreSQL
 - **pgsql-http** - HTTP client for making requests from SQL
-- **insforge_pg_utils** - InsForge preload hook for scoped managed-table RLS policy administration
+- **insforge_pg_utils** - InsForge preload hook for scoped managed-table RLS policy administration and project-admin extension management
 
 ## Build Process
 
