@@ -6,6 +6,7 @@
 #include "access/relation.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_class.h"
+#include "catalog/pg_authid_d.h"
 #include "fmgr.h"
 #include "miscadmin.h"
 #include "nodes/parsenodes.h"
@@ -23,6 +24,7 @@ static ProcessUtility_hook_type prev_ProcessUtility_hook = NULL;
 
 static char *policy_grant_role = NULL;
 static char *policy_grant_tables = NULL;
+static char *extension_grant_role = NULL;
 
 void _PG_init(void);
 void _PG_fini(void);
@@ -50,6 +52,9 @@ static RangeVar *get_drop_policy_target(DropStmt *stmt);
 static RangeVar *get_rename_policy_target(RenameStmt *stmt);
 static bool alter_table_only_updates_rls(AlterTableStmt *stmt);
 static bool current_role_matches_policy_grant_role(void);
+static bool current_role_matches_extension_grant_role(void);
+static bool current_role_matches_configured_role(const char *role_name);
+static bool is_extension_utility_statement(Node *utility_stmt);
 static bool target_table_is_policy_granted(const RangeVar *target_table,
                                            Oid *target_table_oid);
 static void run_as_relation_owner(Oid relid,
@@ -61,6 +66,14 @@ static void run_as_relation_owner(Oid relid,
                                   QueryEnvironment *queryEnv,
                                   DestReceiver *dest,
                                   QueryCompletion *qc);
+static void run_as_bootstrap_superuser(PlannedStmt *pstmt,
+                                       const char *queryString,
+                                       bool readOnlyTree,
+                                       ProcessUtilityContext context,
+                                       ParamListInfo params,
+                                       QueryEnvironment *queryEnv,
+                                       DestReceiver *dest,
+                                       QueryCompletion *qc);
 static char *trim_token(char *token);
 
 void
@@ -84,6 +97,18 @@ _PG_init(void)
       NULL,
       &policy_grant_tables,
       "",
+      PGC_SIGHUP,
+      0,
+      NULL,
+      NULL,
+      NULL);
+
+  DefineCustomStringVariable(
+      "insforge.extension_grant_role",
+      "Role allowed to manage installed PostgreSQL extensions without direct superuser privileges.",
+      NULL,
+      &extension_grant_role,
+      "project_admin",
       PGC_SIGHUP,
       0,
       NULL,
@@ -124,6 +149,14 @@ insforge_pg_utils_ProcessUtility(PlannedStmt *pstmt,
                             context, params, queryEnv, dest, qc);
       return;
     }
+  }
+
+  if (!superuser() && current_role_matches_extension_grant_role() &&
+      is_extension_utility_statement(utility_stmt))
+  {
+    run_as_bootstrap_superuser(pstmt, queryString, readOnlyTree, context,
+                               params, queryEnv, dest, qc);
+    return;
   }
 
   run_next_ProcessUtility(pstmt, queryString, readOnlyTree, context, params,
@@ -256,15 +289,50 @@ alter_table_only_updates_rls(AlterTableStmt *stmt)
 static bool
 current_role_matches_policy_grant_role(void)
 {
+  return current_role_matches_configured_role(policy_grant_role);
+}
+
+static bool
+current_role_matches_extension_grant_role(void)
+{
+  return current_role_matches_configured_role(extension_grant_role);
+}
+
+static bool
+current_role_matches_configured_role(const char *role_name)
+{
   const char *current_role_name;
 
-  if (policy_grant_role == NULL || policy_grant_role[0] == '\0')
+  if (role_name == NULL || role_name[0] == '\0')
   {
     return false;
   }
 
   current_role_name = GetUserNameFromId(GetUserId(), false);
-  return strcmp(current_role_name, policy_grant_role) == 0;
+  return strcmp(current_role_name, role_name) == 0;
+}
+
+static bool
+is_extension_utility_statement(Node *utility_stmt)
+{
+  if (utility_stmt == NULL)
+  {
+    return false;
+  }
+
+  switch (nodeTag(utility_stmt))
+  {
+    case T_CreateExtensionStmt:
+    case T_AlterExtensionStmt:
+    case T_AlterExtensionContentsStmt:
+      return true;
+
+    case T_DropStmt:
+      return ((DropStmt *) utility_stmt)->removeType == OBJECT_EXTENSION;
+
+    default:
+      return false;
+  }
 }
 
 static bool
@@ -341,6 +409,38 @@ run_as_relation_owner(Oid relid,
 
   GetUserIdAndSecContext(&save_userid, &save_sec_context);
   SetUserIdAndSecContext(owner_id,
+                         save_sec_context | SECURITY_LOCAL_USERID_CHANGE);
+
+  PG_TRY();
+  {
+    run_next_ProcessUtility(pstmt, queryString, readOnlyTree, context, params,
+                            queryEnv, dest, qc);
+  }
+  PG_CATCH();
+  {
+    SetUserIdAndSecContext(save_userid, save_sec_context);
+    PG_RE_THROW();
+  }
+  PG_END_TRY();
+
+  SetUserIdAndSecContext(save_userid, save_sec_context);
+}
+
+static void
+run_as_bootstrap_superuser(PlannedStmt *pstmt,
+                           const char *queryString,
+                           bool readOnlyTree,
+                           ProcessUtilityContext context,
+                           ParamListInfo params,
+                           QueryEnvironment *queryEnv,
+                           DestReceiver *dest,
+                           QueryCompletion *qc)
+{
+  Oid save_userid;
+  int save_sec_context;
+
+  GetUserIdAndSecContext(&save_userid, &save_sec_context);
+  SetUserIdAndSecContext(BOOTSTRAP_SUPERUSERID,
                          save_sec_context | SECURITY_LOCAL_USERID_CHANGE);
 
   PG_TRY();
