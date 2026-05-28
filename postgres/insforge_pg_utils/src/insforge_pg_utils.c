@@ -29,6 +29,7 @@ static char *extension_grant_role = NULL;
 typedef struct InsforgeUtilityCall
 {
   PlannedStmt *pstmt;
+  Node *utility_stmt;
   const char *queryString;
   bool readOnlyTree;
   ProcessUtilityContext context;
@@ -52,10 +53,8 @@ static void insforge_pg_utils_ProcessUtility(PlannedStmt *pstmt,
 
 static void run_next_ProcessUtility(const InsforgeUtilityCall *call);
 
-static bool handle_policy_utility(Node *utility_stmt,
-                                  const InsforgeUtilityCall *call);
-static bool handle_extension_utility(Node *utility_stmt,
-                                     const InsforgeUtilityCall *call);
+static bool handle_policy_utility(const InsforgeUtilityCall *call);
+static bool handle_extension_utility(const InsforgeUtilityCall *call);
 static RangeVar *get_policy_utility_target(Node *utility_stmt);
 static RangeVar *get_drop_policy_target(DropStmt *stmt);
 static RangeVar *get_rename_policy_target(RenameStmt *stmt);
@@ -128,10 +127,10 @@ insforge_pg_utils_ProcessUtility(PlannedStmt *pstmt,
                                  DestReceiver *dest,
                                  QueryCompletion *qc)
 {
-  Node *utility_stmt = pstmt->utilityStmt;
   InsforgeUtilityCall call;
 
   call.pstmt = pstmt;
+  call.utility_stmt = pstmt->utilityStmt;
   call.queryString = queryString;
   call.readOnlyTree = readOnlyTree;
   call.context = context;
@@ -142,12 +141,12 @@ insforge_pg_utils_ProcessUtility(PlannedStmt *pstmt,
 
   if (!superuser())
   {
-    if (handle_policy_utility(utility_stmt, &call))
+    if (handle_policy_utility(&call))
     {
       return;
     }
 
-    if (handle_extension_utility(utility_stmt, &call))
+    if (handle_extension_utility(&call))
     {
       return;
     }
@@ -174,7 +173,7 @@ run_next_ProcessUtility(const InsforgeUtilityCall *call)
 }
 
 static bool
-handle_policy_utility(Node *utility_stmt, const InsforgeUtilityCall *call)
+handle_policy_utility(const InsforgeUtilityCall *call)
 {
   RangeVar *target_table = NULL;
   Oid target_table_oid = InvalidOid;
@@ -184,7 +183,7 @@ handle_policy_utility(Node *utility_stmt, const InsforgeUtilityCall *call)
     return false;
   }
 
-  target_table = get_policy_utility_target(utility_stmt);
+  target_table = get_policy_utility_target(call->utility_stmt);
   if (target_table == NULL ||
       !policy_target_is_configured(target_table, &target_table_oid))
   {
@@ -196,10 +195,10 @@ handle_policy_utility(Node *utility_stmt, const InsforgeUtilityCall *call)
 }
 
 static bool
-handle_extension_utility(Node *utility_stmt, const InsforgeUtilityCall *call)
+handle_extension_utility(const InsforgeUtilityCall *call)
 {
   if (!current_role_matches_configured_role(extension_grant_role) ||
-      !is_extension_utility_statement(utility_stmt))
+      !is_extension_utility_statement(call->utility_stmt))
   {
     return false;
   }
