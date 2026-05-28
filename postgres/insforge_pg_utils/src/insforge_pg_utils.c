@@ -26,6 +26,18 @@ static char *policy_grant_role = NULL;
 static char *policy_grant_tables = NULL;
 static char *extension_grant_role = NULL;
 
+typedef struct InsforgeUtilityCall
+{
+  PlannedStmt *pstmt;
+  const char *queryString;
+  bool readOnlyTree;
+  ProcessUtilityContext context;
+  ParamListInfo params;
+  QueryEnvironment *queryEnv;
+  DestReceiver *dest;
+  QueryCompletion *qc;
+} InsforgeUtilityCall;
+
 void _PG_init(void);
 void _PG_fini(void);
 
@@ -38,42 +50,23 @@ static void insforge_pg_utils_ProcessUtility(PlannedStmt *pstmt,
                                              DestReceiver *dest,
                                              QueryCompletion *qc);
 
-static void run_next_ProcessUtility(PlannedStmt *pstmt,
-                                    const char *queryString,
-                                    bool readOnlyTree,
-                                    ProcessUtilityContext context,
-                                    ParamListInfo params,
-                                    QueryEnvironment *queryEnv,
-                                    DestReceiver *dest,
-                                    QueryCompletion *qc);
+static void run_next_ProcessUtility(const InsforgeUtilityCall *call);
 
-static RangeVar *get_policy_grant_target(Node *utility_stmt);
+static bool handle_policy_utility(Node *utility_stmt,
+                                  const InsforgeUtilityCall *call);
+static bool handle_extension_utility(Node *utility_stmt,
+                                     const InsforgeUtilityCall *call);
+static RangeVar *get_policy_utility_target(Node *utility_stmt);
 static RangeVar *get_drop_policy_target(DropStmt *stmt);
 static RangeVar *get_rename_policy_target(RenameStmt *stmt);
 static bool alter_table_only_updates_rls(AlterTableStmt *stmt);
-static bool current_role_matches_policy_grant_role(void);
-static bool current_role_matches_extension_grant_role(void);
 static bool current_role_matches_configured_role(const char *role_name);
 static bool is_extension_utility_statement(Node *utility_stmt);
-static bool target_table_is_policy_granted(const RangeVar *target_table,
-                                           Oid *target_table_oid);
+static bool policy_target_is_configured(const RangeVar *target_table,
+                                        Oid *target_table_oid);
 static void run_as_relation_owner(Oid relid,
-                                  PlannedStmt *pstmt,
-                                  const char *queryString,
-                                  bool readOnlyTree,
-                                  ProcessUtilityContext context,
-                                  ParamListInfo params,
-                                  QueryEnvironment *queryEnv,
-                                  DestReceiver *dest,
-                                  QueryCompletion *qc);
-static void run_as_bootstrap_superuser(PlannedStmt *pstmt,
-                                       const char *queryString,
-                                       bool readOnlyTree,
-                                       ProcessUtilityContext context,
-                                       ParamListInfo params,
-                                       QueryEnvironment *queryEnv,
-                                       DestReceiver *dest,
-                                       QueryCompletion *qc);
+                                  const InsforgeUtilityCall *call);
+static void run_as_user(Oid userid, const InsforgeUtilityCall *call);
 static char *trim_token(char *token);
 
 void
@@ -136,57 +129,87 @@ insforge_pg_utils_ProcessUtility(PlannedStmt *pstmt,
                                  QueryCompletion *qc)
 {
   Node *utility_stmt = pstmt->utilityStmt;
-  RangeVar *target_table = NULL;
-  Oid target_table_oid = InvalidOid;
+  InsforgeUtilityCall call;
 
-  if (!superuser() && current_role_matches_policy_grant_role())
+  call.pstmt = pstmt;
+  call.queryString = queryString;
+  call.readOnlyTree = readOnlyTree;
+  call.context = context;
+  call.params = params;
+  call.queryEnv = queryEnv;
+  call.dest = dest;
+  call.qc = qc;
+
+  if (!superuser())
   {
-    target_table = get_policy_grant_target(utility_stmt);
-    if (target_table != NULL &&
-        target_table_is_policy_granted(target_table, &target_table_oid))
+    if (handle_policy_utility(utility_stmt, &call))
     {
-      run_as_relation_owner(target_table_oid, pstmt, queryString, readOnlyTree,
-                            context, params, queryEnv, dest, qc);
+      return;
+    }
+
+    if (handle_extension_utility(utility_stmt, &call))
+    {
       return;
     }
   }
 
-  if (!superuser() && current_role_matches_extension_grant_role() &&
-      is_extension_utility_statement(utility_stmt))
-  {
-    run_as_bootstrap_superuser(pstmt, queryString, readOnlyTree, context,
-                               params, queryEnv, dest, qc);
-    return;
-  }
-
-  run_next_ProcessUtility(pstmt, queryString, readOnlyTree, context, params,
-                          queryEnv, dest, qc);
+  run_next_ProcessUtility(&call);
 }
 
 static void
-run_next_ProcessUtility(PlannedStmt *pstmt,
-                        const char *queryString,
-                        bool readOnlyTree,
-                        ProcessUtilityContext context,
-                        ParamListInfo params,
-                        QueryEnvironment *queryEnv,
-                        DestReceiver *dest,
-                        QueryCompletion *qc)
+run_next_ProcessUtility(const InsforgeUtilityCall *call)
 {
   if (prev_ProcessUtility_hook)
   {
-    prev_ProcessUtility_hook(pstmt, queryString, readOnlyTree, context, params,
-                             queryEnv, dest, qc);
+    prev_ProcessUtility_hook(call->pstmt, call->queryString,
+                             call->readOnlyTree, call->context, call->params,
+                             call->queryEnv, call->dest, call->qc);
   }
   else
   {
-    standard_ProcessUtility(pstmt, queryString, readOnlyTree, context, params,
-                            queryEnv, dest, qc);
+    standard_ProcessUtility(call->pstmt, call->queryString,
+                            call->readOnlyTree, call->context, call->params,
+                            call->queryEnv, call->dest, call->qc);
   }
 }
 
+static bool
+handle_policy_utility(Node *utility_stmt, const InsforgeUtilityCall *call)
+{
+  RangeVar *target_table = NULL;
+  Oid target_table_oid = InvalidOid;
+
+  if (!current_role_matches_configured_role(policy_grant_role))
+  {
+    return false;
+  }
+
+  target_table = get_policy_utility_target(utility_stmt);
+  if (target_table == NULL ||
+      !policy_target_is_configured(target_table, &target_table_oid))
+  {
+    return false;
+  }
+
+  run_as_relation_owner(target_table_oid, call);
+  return true;
+}
+
+static bool
+handle_extension_utility(Node *utility_stmt, const InsforgeUtilityCall *call)
+{
+  if (!current_role_matches_configured_role(extension_grant_role) ||
+      !is_extension_utility_statement(utility_stmt))
+  {
+    return false;
+  }
+
+  run_as_user(BOOTSTRAP_SUPERUSERID, call);
+  return true;
+}
+
 static RangeVar *
-get_policy_grant_target(Node *utility_stmt)
+get_policy_utility_target(Node *utility_stmt)
 {
   if (utility_stmt == NULL)
   {
@@ -287,18 +310,6 @@ alter_table_only_updates_rls(AlterTableStmt *stmt)
 }
 
 static bool
-current_role_matches_policy_grant_role(void)
-{
-  return current_role_matches_configured_role(policy_grant_role);
-}
-
-static bool
-current_role_matches_extension_grant_role(void)
-{
-  return current_role_matches_configured_role(extension_grant_role);
-}
-
-static bool
 current_role_matches_configured_role(const char *role_name)
 {
   const char *current_role_name;
@@ -336,8 +347,8 @@ is_extension_utility_statement(Node *utility_stmt)
 }
 
 static bool
-target_table_is_policy_granted(const RangeVar *target_table,
-                               Oid *target_table_oid)
+policy_target_is_configured(const RangeVar *target_table,
+                            Oid *target_table_oid)
 {
   char *tables_copy;
   char *table_token;
@@ -388,18 +399,8 @@ target_table_is_policy_granted(const RangeVar *target_table,
 }
 
 static void
-run_as_relation_owner(Oid relid,
-                      PlannedStmt *pstmt,
-                      const char *queryString,
-                      bool readOnlyTree,
-                      ProcessUtilityContext context,
-                      ParamListInfo params,
-                      QueryEnvironment *queryEnv,
-                      DestReceiver *dest,
-                      QueryCompletion *qc)
+run_as_relation_owner(Oid relid, const InsforgeUtilityCall *call)
 {
-  Oid save_userid;
-  int save_sec_context;
   Relation relation;
   Oid owner_id;
 
@@ -407,46 +408,22 @@ run_as_relation_owner(Oid relid,
   owner_id = RelationGetForm(relation)->relowner;
   relation_close(relation, NoLock);
 
-  GetUserIdAndSecContext(&save_userid, &save_sec_context);
-  SetUserIdAndSecContext(owner_id,
-                         save_sec_context | SECURITY_LOCAL_USERID_CHANGE);
-
-  PG_TRY();
-  {
-    run_next_ProcessUtility(pstmt, queryString, readOnlyTree, context, params,
-                            queryEnv, dest, qc);
-  }
-  PG_CATCH();
-  {
-    SetUserIdAndSecContext(save_userid, save_sec_context);
-    PG_RE_THROW();
-  }
-  PG_END_TRY();
-
-  SetUserIdAndSecContext(save_userid, save_sec_context);
+  run_as_user(owner_id, call);
 }
 
 static void
-run_as_bootstrap_superuser(PlannedStmt *pstmt,
-                           const char *queryString,
-                           bool readOnlyTree,
-                           ProcessUtilityContext context,
-                           ParamListInfo params,
-                           QueryEnvironment *queryEnv,
-                           DestReceiver *dest,
-                           QueryCompletion *qc)
+run_as_user(Oid userid, const InsforgeUtilityCall *call)
 {
   Oid save_userid;
   int save_sec_context;
 
   GetUserIdAndSecContext(&save_userid, &save_sec_context);
-  SetUserIdAndSecContext(BOOTSTRAP_SUPERUSERID,
+  SetUserIdAndSecContext(userid,
                          save_sec_context | SECURITY_LOCAL_USERID_CHANGE);
 
   PG_TRY();
   {
-    run_next_ProcessUtility(pstmt, queryString, readOnlyTree, context, params,
-                            queryEnv, dest, qc);
+    run_next_ProcessUtility(call);
   }
   PG_CATCH();
   {
